@@ -4,6 +4,7 @@ import json
 from datetime import timedelta
 import tempfile
 import re
+import yt_dlp
 import gradio as gr
 import groq
 from groq import Groq
@@ -25,7 +26,11 @@ def handle_groq_error(e, model_name):
             json_str = json_str.replace("'", '"')  # Replace single quotes with double quotes
             error_data = json.loads(json_str)
 
-    if isinstance(e, groq.RateLimitError):
+    if isinstance(e, groq.AuthenticationError):
+        if isinstance(error_data, dict) and 'error' in error_data and 'message' in error_data['error']:
+            error_message = error_data['error']['message']
+            raise gr.Error(error_message)
+    elif isinstance(e, groq.RateLimitError):
         if isinstance(error_data, dict) and 'error' in error_data and 'message' in error_data['error']:
             error_message = error_data['error']['message']
             raise gr.Error(error_message)
@@ -138,16 +143,42 @@ LANGUAGE_CODES = {
 }
 
 
+# download link input 
+def yt_dlp_download(link):
+    try:
+        ydl_opts = {
+            'format': 'bestvideo+bestaudio/best',  # Download best video and audio or best available
+            'outtmpl': '%(title)s.%(ext)s',
+            'nocheckcertificate': True,
+            'ignoreerrors': False,
+            'no_warnings': True,
+            'quiet': True,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([link])
+            result = ydl.extract_info(link, download=False)
+            download_path = ydl.prepare_filename(result)
+
+        return download_path
+    except yt_dlp.utils.DownloadError as e:
+        raise gr.Error(f"Download Error: {e}")
+    except ValueError as e:
+        raise gr.Error(f"Invalid Link or Format Error: {e}")
+    except Exception as e:
+        raise gr.Error(f"An unexpected error occurred: {e}")
+
+
 # helper functions
 
-def split_audio(audio_file_path, chunk_size_mb):
+def split_audio(input_file_path, chunk_size_mb):
     chunk_size = chunk_size_mb * 1024 * 1024  # Convert MB to bytes
     file_number = 1
     chunks = []
-    with open(audio_file_path, 'rb') as f:
+    with open(input_file_path, 'rb') as f:
         chunk = f.read(chunk_size)
         while chunk:
-            chunk_name = f"{os.path.splitext(audio_file_path)[0]}_part{file_number:03}.mp3" # Pad file number for correct ordering
+            chunk_name = f"{os.path.splitext(input_file_path)[0]}_part{file_number:03}.mp3" # Pad file number for correct ordering
             with open(chunk_name, 'wb') as chunk_file:
                 chunk_file.write(chunk)
             chunks.append(chunk_name)
@@ -188,12 +219,12 @@ ALLOWED_FILE_EXTENSIONS = ["mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm"]
 MAX_FILE_SIZE_MB = 25
 CHUNK_SIZE_MB = 25
 
-def check_file(audio_file_path):
-    if not audio_file_path:
+def check_file(input_file_path):
+    if not input_file_path:
         raise gr.Error("Please upload an audio/video file.")
 
-    file_size_mb = os.path.getsize(audio_file_path) / (1024 * 1024)
-    file_extension = audio_file_path.split(".")[-1].lower()
+    file_size_mb = os.path.getsize(input_file_path) / (1024 * 1024)
+    file_extension = input_file_path.split(".")[-1].lower()
 
     if file_extension not in ALLOWED_FILE_EXTENSIONS:
         raise gr.Error(f"Invalid file type (.{file_extension}). Allowed types: {', '.join(ALLOWED_FILE_EXTENSIONS)}")
@@ -203,13 +234,13 @@ def check_file(audio_file_path):
             f"File size too large ({file_size_mb:.2f} MB). Attempting to downsample to 16kHz MP3 128kbps. Maximum size allowed: {MAX_FILE_SIZE_MB} MB"
         )
 
-        output_file_path = os.path.splitext(audio_file_path)[0] + "_downsampled.mp3"
+        output_file_path = os.path.splitext(input_file_path)[0] + "_downsampled.mp3"
         try:
             subprocess.run(
                 [
                     "ffmpeg",
                     "-i",
-                    audio_file_path,
+                    input_file_path,
                     "-ar",
                     "16000",
                     "-ab",
@@ -233,7 +264,7 @@ def check_file(audio_file_path):
             return output_file_path, None
         except subprocess.CalledProcessError as e:
             raise gr.Error(f"Error during downsampling: {e}")
-    return audio_file_path, None
+    return input_file_path, None
 
 
 # subtitle maker
@@ -260,8 +291,13 @@ def json_to_srt(transcription_json):
     return '\n'.join(srt_lines)
 
 
-def generate_subtitles(audio_file_path, prompt, language, auto_detect_language, model, include_video, font_selection, font_file, font_color, font_size, outline_thickness, outline_color):
-    processed_path, split_status = check_file(audio_file_path)
+def generate_subtitles(input_mode, input_file, link_input, prompt, language, auto_detect_language, model, include_video, font_selection, font_file, font_color, font_size, outline_thickness, outline_color):
+    if input_mode == "Upload Video/Audio File":
+        input_file_path = input_file
+    elif input_mode == "Link Video/Audio":
+        input_file_path = yt_dlp_download(link_input)
+    
+    processed_path, split_status = check_file(input_file_path)
     full_srt_content = ""
     total_duration = 0
     segment_id_offset = 0
@@ -298,7 +334,7 @@ def generate_subtitles(audio_file_path, prompt, language, auto_detect_language, 
                     temp_srt_file.write("\n") # add a new line at the end of the srt chunk file to fix format when merged
                 srt_chunks.append(temp_srt_path)
 
-                if include_video and audio_file_path.lower().endswith((".mp4", ".webm")):
+                if include_video and input_file_path.lower().endswith((".mp4", ".webm")):
                     try:
                         output_file_path = chunk_path.replace(os.path.splitext(chunk_path)[1], "_with_subs" + os.path.splitext(chunk_path)[1])
                         # Handle font selection
@@ -330,8 +366,10 @@ def generate_subtitles(audio_file_path, prompt, language, auto_detect_language, 
                         video_chunks.append(output_file_path) 
                     except subprocess.CalledProcessError as e:
                         raise gr.Error(f"Error during subtitle addition: {e}")     
-                elif include_video and not audio_file_path.lower().endswith((".mp4", ".webm")):
-                    gr.Warning(f"You have checked on the 'Include Video with Subtitles', but the input file {audio_file_path} isn't a video (.mp4 or .webm). Returning only the SRT File.", duration=15)
+                elif include_video and not input_file_path.lower().endswith((".mp4", ".webm")):
+                    gr.Warning(f"You have checked on the 'Include Video with Subtitles', but the input file {input_file_path} isn't a video (.mp4 or .webm). Returning only the SRT File.", duration=15)
+            except groq.AuthenticationError as e:
+                handle_groq_error(e, model)
             except groq.RateLimitError as e:
                 handle_groq_error(e, model)
                 gr.Warning(f"API limit reached during chunk {i+1}. Returning processed chunks only.")
@@ -346,7 +384,7 @@ def generate_subtitles(audio_file_path, prompt, language, auto_detect_language, 
                     raise gr.Error("Subtitle generation failed due to API limits.")
 
         # Merge SRT chunks
-        final_srt_path = os.path.splitext(audio_file_path)[0] + "_final.srt"
+        final_srt_path = os.path.splitext(input_file_path)[0] + "_final.srt"
         with open(final_srt_path, 'w', encoding="utf-8") as outfile:
             for chunk_srt in srt_chunks:
                 with open(chunk_srt, 'r', encoding="utf-8") as infile:
@@ -373,14 +411,14 @@ def generate_subtitles(audio_file_path, prompt, language, auto_detect_language, 
             transcription_json = transcription_json_response.segments
 
             srt_content = json_to_srt(transcription_json)
-            temp_srt_path = os.path.splitext(audio_file_path)[0] + ".srt"
+            temp_srt_path = os.path.splitext(input_file_path)[0] + ".srt"
             with open(temp_srt_path, "w", encoding="utf-8") as temp_srt_file:
                 temp_srt_file.write(srt_content)
 
-            if include_video and audio_file_path.lower().endswith((".mp4", ".webm")):
+            if include_video and input_file_path.lower().endswith((".mp4", ".webm")):
                 try:
-                    output_file_path = audio_file_path.replace(
-                        os.path.splitext(audio_file_path)[1], "_with_subs" + os.path.splitext(audio_file_path)[1]
+                    output_file_path = input_file_path.replace(
+                        os.path.splitext(input_file_path)[1], "_with_subs" + os.path.splitext(input_file_path)[1]
                     )
                     # Handle font selection
                     if font_selection == "Custom Font File" and font_file:
@@ -400,7 +438,7 @@ def generate_subtitles(audio_file_path, prompt, language, auto_detect_language, 
                             "ffmpeg",
                             "-y",
                             "-i",
-                            audio_file_path,
+                            input_file_path,
                             "-vf",
                             f"subtitles={temp_srt_path}:fontsdir={font_dir}:force_style='FontName={font_name},Fontsize={int(font_size)},PrimaryColour=&H{font_color[1:]}&,OutlineColour=&H{outline_color[1:]}&,BorderStyle={int(outline_thickness)},Outline=1'",
                             "-preset", "fast",
@@ -411,10 +449,12 @@ def generate_subtitles(audio_file_path, prompt, language, auto_detect_language, 
                     return temp_srt_path, output_file_path
                 except subprocess.CalledProcessError as e:
                     raise gr.Error(f"Error during subtitle addition: {e}")
-            elif include_video and not audio_file_path.lower().endswith((".mp4", ".webm")):
-                gr.Warning(f"You have checked on the 'Include Video with Subtitles', but the input file {audio_file_path} isn't a video (.mp4 or .webm). Returning only the SRT File.", duration=15)
+            elif include_video and not input_file_path.lower().endswith((".mp4", ".webm")):
+                gr.Warning(f"You have checked on the 'Include Video with Subtitles', but the input file {input_file_path} isn't a video (.mp4 or .webm). Returning only the SRT File.", duration=15)
             
             return temp_srt_path, None
+        except groq.AuthenticationError as e:
+            handle_groq_error(e, model)
         except groq.RateLimitError as e:
             handle_groq_error(e, model)
         except ValueError as e:
@@ -452,6 +492,7 @@ h1{text-align:center}
 """
 
 
+
 with gr.Blocks(theme=theme, css=css) as interface:
     gr.Markdown(
         """
@@ -462,16 +503,26 @@ with gr.Blocks(theme=theme, css=css) as interface:
     <br> <a href="https://discord.gg/osai"> <img src="https://img.shields.io/discord/1198701940511617164?color=%23738ADB&label=Discord&style=for-the-badge" alt="Discord"> </a>  
     """
     )
-    with gr.Row():
-        audio_input_subtitles = gr.File(label="Upload Audio/Video", file_types=[f".{ext}" for ext in ALLOWED_FILE_EXTENSIONS],)
-        model_choice_subtitles = gr.Dropdown(choices=["whisper-large-v3"], value="whisper-large-v3", label="Audio Speech Recogition (ASR) Model")
-    with gr.Row():
-        transcribe_prompt_subtitles = gr.Textbox(label="Prompt (Optional)", info="Specify any context or spelling corrections.")
+
+    with gr.Column():
+        # Input mode selection
+        input_mode = gr.Dropdown(choices=["Upload Video/Audio File", "Link Video/Audio"], value="Upload Video/Audio File", label="Input Mode")
+        # Input components
+        input_file = gr.File(label="Upload Audio/Video", file_types=[f".{ext}" for ext in ALLOWED_FILE_EXTENSIONS], visible=True)
+        link_input_info = gr.Markdown("Using yt-dlp to download Youtube Video Links + other platform's ones. Check [all supported sites](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)!", visible=False)
+        link_input = gr.Textbox(label="Enter Video/Audio Link", visible=False)
+
+    # Model and options
+    model_choice_subtitles = gr.Dropdown(choices=["whisper-large-v3"], value="whisper-large-v3", label="Audio Speech Recogition (ASR) Model")
+    transcribe_prompt_subtitles = gr.Textbox(label="Prompt (Optional)", info="Specify any context or spelling corrections.")
     with gr.Row():
         language_subtitles = gr.Dropdown(choices=[(lang, code) for lang, code in LANGUAGE_CODES.items()], value="en", label="Language")
         auto_detect_language_subtitles = gr.Checkbox(label="Auto Detect Language")
-    with gr.Row():
-        transcribe_button_subtitles = gr.Button("Generate Subtitles")
+
+    # Generate button
+    transcribe_button_subtitles = gr.Button("Generate Subtitles")
+
+    # Output and settings
     include_video_option = gr.Checkbox(label="Include Video with Subtitles")
     gr.Markdown("The SubText Rip (SRT) File, contains the subtitles, you can upload this to any video editing app for adding the subs to your video and also modify/stilyze them")
     srt_output = gr.File(label="SRT Output File")
@@ -491,6 +542,15 @@ with gr.Blocks(theme=theme, css=css) as interface:
 
     # Event bindings
 
+    # input mode
+    def toggle_input(mode):
+        if mode == "Upload Video/Audio File":
+            return gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)
+        else:
+            return gr.update(visible=False), gr.update(visible=True), gr.update(visible=True)
+
+    input_mode.change(fn=toggle_input, inputs=[input_mode], outputs=[input_file, link_input_info, link_input])
+
     # show video output
     include_video_option.change(lambda include_video: gr.update(visible=include_video), inputs=[include_video_option], outputs=[video_output])
     # show video output subs settings checkbox
@@ -501,11 +561,13 @@ with gr.Blocks(theme=theme, css=css) as interface:
     show_subtitle_settings.change(lambda show, include_video: gr.update(visible=show and include_video), inputs=[show_subtitle_settings, include_video_option], outputs=[show_subtitle_settings])
     # show custom font file selection
     font_selection.change(lambda font_selection: gr.update(visible=font_selection == "Custom Font File"), inputs=[font_selection], outputs=[font_file])
-    # generate subtitles event
+    # Modified generate subtitles event
     transcribe_button_subtitles.click(
-        generate_subtitles,
+        fn=generate_subtitles,
         inputs=[
-            audio_input_subtitles,
+            input_mode,
+            input_file,
+            link_input,
             transcribe_prompt_subtitles,
             language_subtitles,
             auto_detect_language_subtitles,
@@ -520,6 +582,5 @@ with gr.Blocks(theme=theme, css=css) as interface:
         ],
         outputs=[srt_output, video_output],
     )
-
 
 interface.launch(share=True)
