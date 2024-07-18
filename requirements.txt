@@ -1,2 +1,4 @@
+certifi
+yt-dlp
 gradio
 groq
