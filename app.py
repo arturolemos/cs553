@@ -33,6 +33,7 @@ def handle_groq_error(e, model_name):
     elif isinstance(e, groq.RateLimitError):
         if isinstance(error_data, dict) and 'error' in error_data and 'message' in error_data['error']:
             error_message = error_data['error']['message']
+            error_message = re.sub(r'org_[a-zA-Z0-9]+', 'org_(censored)', error_message) # censor org
             raise gr.Error(error_message)
     else:
         raise gr.Error(f"Error during Groq API call: {e}")
@@ -513,7 +514,7 @@ with gr.Blocks(theme=theme, css=css) as interface:
         link_input = gr.Textbox(label="Enter Video/Audio Link", visible=False)
 
     # Model and options
-    model_choice_subtitles = gr.Dropdown(choices=["whisper-large-v3"], value="whisper-large-v3", label="Audio Speech Recogition (ASR) Model")
+    model_choice_subtitles = gr.Dropdown(choices=["whisper-large-v3", "distil-whisper-large-v3-en"], value="whisper-large-v3", label="Audio Speech Recogition (ASR) Model")
     transcribe_prompt_subtitles = gr.Textbox(label="Prompt (Optional)", info="Specify any context or spelling corrections.")
     with gr.Row():
         language_subtitles = gr.Dropdown(choices=[(lang, code) for lang, code in LANGUAGE_CODES.items()], value="en", label="Language")
@@ -561,6 +562,16 @@ with gr.Blocks(theme=theme, css=css) as interface:
     show_subtitle_settings.change(lambda show, include_video: gr.update(visible=show and include_video), inputs=[show_subtitle_settings, include_video_option], outputs=[show_subtitle_settings])
     # show custom font file selection
     font_selection.change(lambda font_selection: gr.update(visible=font_selection == "Custom Font File"), inputs=[font_selection], outputs=[font_file])
+    
+    # Update language dropdown based on model selection
+    def update_language_options(model):
+        if model == "distil-whisper-large-v3-en":
+            return gr.update(choices=[("English", "en")], value="en", interactive=False)
+        else:
+            return gr.update(choices=[(lang, code) for lang, code in LANGUAGE_CODES.items()], value="en", interactive=True)
+
+    model_choice_subtitles.change(fn=update_language_options, inputs=[model_choice_subtitles], outputs=[language_subtitles])
+
     # Modified generate subtitles event
     transcribe_button_subtitles.click(
         fn=generate_subtitles,
