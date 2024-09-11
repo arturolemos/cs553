@@ -17,7 +17,7 @@ jobs:
         
         # Pull latest changes from Hugging Face repo before pushing
       - name: Pull latest changes from Hugging Face
-        run: git pull --no-rebase https://Atuluo:$HF_TOKEN@huggingface.co/spaces/CS553Team15/CS553_Team_15 main
+        run: git pull --no-rebase --allow-unrelated-histories https://atuluo:$HF_TOKEN@huggingface.co/spaces/CS553Team15/CS553_Team_15 main
 
         # Push changes to Hugging Face repo
       - name: Push to hub
