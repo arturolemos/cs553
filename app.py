@@ -12,7 +12,7 @@ from groq import Groq
 
 # setup groq 
 
-client = Groq(api_key=os.environ.get("Groq_Api_Key"))
+client = Groq(api_key="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")
 
 def handle_groq_error(e, model_name):
     error_data = e.args[0]
