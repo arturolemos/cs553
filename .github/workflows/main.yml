@@ -20,7 +20,7 @@ jobs:
         run: |
           git config --global user.name "GitHub Action"
           git config --global user.email "action@github.com"
-          
+
         # Pull latest changes from Hugging Face repo before pushing
       - name: Pull latest changes from Hugging Face
         run: git pull --no-rebase --allow-unrelated-histories https://atuluo:$HF_TOKEN@huggingface.co/spaces/CS553Team15/CS553_Team_15 main
@@ -29,4 +29,4 @@ jobs:
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push https://Atuluo:$HF_TOKEN@huggingface.co/spaces/CS553Team15/CS553_Team_15 main
+        run: git push https://huggingface.co/spaces/CS553Team15/CS553_Team_15 main
