@@ -1,0 +1,19 @@
+name: Discord Notification
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Discord notification
+        env:
+          DISCORD_WEBHOOK_URL: ${{ https://discord.com/api/webhooks/1283522108676116542/Tqr-2cp10CAIN5odJ9DozKRhypWAld3T_tCMQzPBslZvknOmJlv2yDas43GLfM-_zRmY }}
+        run: |
+          curl -X POST -H "Content-Type: application/json" \
+          -d "{\"content\": \"A new commit was pushed to the main branch by $GITHUB_ACTOR. :smile: Ponytails rock!\"}" \
+          $DISCORD_WEBHOOK_URL
+
