@@ -14,20 +14,7 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
-        
-      # Configure Git user name and email
-      - name: Set up Git identity
-        run: |
-          git config --global user.name "GitHub Action"
-          git config --global user.email "action@github.com"
-
-        # Pull latest changes from Hugging Face repo before pushing
-      - name: Pull latest changes from Hugging Face
-        run: git pull --no-rebase --allow-unrelated-histories https://atuluo:$HF_TOKEN@huggingface.co/spaces/CS553Team15/CS553_Team_15 main
-
-
-        # Push changes to Hugging Face repo
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push https://huggingface.co/spaces/CS553Team15/CS553_Team_15 main
+        run: git push https://atuluo:$HF_TOKEN@huggingface.co/spaces/CS553Team15/CS553_Team_15 main
